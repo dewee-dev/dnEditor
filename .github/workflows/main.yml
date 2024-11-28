@@ -45,26 +45,33 @@ jobs:
     - name: Initialize submodules
       run: |
         git submodule update --init --recursive
+
+    - name: Create Reference Include File
+      shell: powershell
+      run: |
+        $referenceContent = @"
+<ItemGroup>
+  <Reference Include="System" />
+  <Reference Include="System.Core" />
+  <Reference Include="System.Data" />
+  <Reference Include="System.Drawing" />
+  <Reference Include="System.Windows.Forms" />
+  <Reference Include="System.Xml" />
+</ItemGroup>
+</Project>
+"@
+        Set-Content -Path "references.txt" -Value $referenceContent
         
     - name: Update project files
       shell: powershell
       run: |
+        $referenceContent = Get-Content "references.txt" -Raw
         Get-ChildItem -Recurse -Filter *.csproj | ForEach-Object {
           $content = Get-Content $_.FullName -Raw
           if (-not ($content -match "<Reference Include=`"System`"")) {
-            $content = $content.Replace("</Project>", @'
-  <ItemGroup>
-    <Reference Include="System" />
-    <Reference Include="System.Core" />
-    <Reference Include="System.Data" />
-    <Reference Include="System.Drawing" />
-    <Reference Include="System.Windows.Forms" />
-    <Reference Include="System.Xml" />
-  </ItemGroup>
-</Project>
-'@)
+            $content = $content -replace '</Project>', $referenceContent
+            Set-Content -Path $_.FullName -Value $content
           }
-          Set-Content -Path $_.FullName -Value $content
         }
 
     - name: Restore NuGet packages
@@ -73,75 +80,4 @@ jobs:
 
     - name: Build with MSBuild
       run: |
-        msbuild ${{ env.SOLUTION_FILE }} /p:Configuration=${{ env.BUILD_CONFIGURATION }} /p:Platform="Any CPU" /p:TargetFrameworkVersion=v4.0 /t:Rebuild /m
-
-    - name: Create output directory
-      run: mkdir publish
-
-    - name: Copy build outputs
-      shell: powershell
-      run: |
-        Copy-Item "dnEditor\bin\${{ env.BUILD_CONFIGURATION }}\*" -Destination "publish" -Recurse
-
-    - name: Create ZIP archive
-      shell: pwsh
-      run: |
-        Compress-Archive -Path publish\* -DestinationPath dnEditor-win-x64.zip -Force
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: dnEditor-Windows
-        path: dnEditor-win-x64.zip
-        if-no-files-found: error
-
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    
-    steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-        
-    - name: Display structure of downloaded files
-      run: ls -R artifacts/
-
-    - name: Prepare release files
-      run: |
-        mkdir release_files
-        find artifacts -name "*.zip" -exec cp {} release_files/ \;
-        
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: release_files/*.zip
-        generate_release_notes: true
-        draft: false
-        prerelease: false
-        token: ${{ secrets.GITHUB_TOKEN }}
-        name: Release ${{ github.ref_name }}
-        body: |
-          ## dnEditor Release ${{ github.ref_name }}
-          
-          ### 功能特点
-          - 基于 dnlib 的 .NET 程序集编辑器
-          - 支持 ILSpy 反编译器集成
-          - 提供成员创建和删除支持
-          - 包含搜索功能
-          
-          ### 系统要求
-          - Windows x64 系统
-          - .NET Framework 4.0 或更高版本
-          
-          ### 更新内容
-          - 优化构建配置
-          - 改进性能和稳定性
-          - 修复已知问题
-          
-          ### 安装说明
-          1. 下载
+        msbuild ${{ env.SOLUTION_FILE }}
