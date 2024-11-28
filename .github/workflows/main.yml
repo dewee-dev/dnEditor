@@ -1,37 +1,132 @@
-name: CI
+name: Build dnEditor
 
-on: 
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
 
-    workflow_dispatch:
-    
+env:
+  SOLUTION_FILE: dnEditor.sln
+  BUILD_CONFIGURATION: Release
+  DOTNET_VERSION: '7.0.x'
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
   build:
-
     runs-on: windows-latest
 
     steps:
-    - name: Setup MSBuild.exe
-      uses: warrenbuckley/Setup-MSBuild@v1
-      
-    - name: Setup Nuget.exe
-      uses: warrenbuckley/Setup-Nuget@v1
-      
-    - uses: actions/checkout@v1
-    - name: Build
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 0
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Initialize submodules
       run: |
         git submodule update --init --recursive
-        nuget restore dnEditor.sln
-        msbuild dnEditor.sln /p:Configuration=Release /m /verbosity:normal /p:WarningLevel=0
-    - name: Create ZIP
-      if: startsWith(github.ref, 'refs/tags/')
+        
+    - name: Restore dependencies
       run: |
-        Compress-Archive -Path dnEditor/bin/Release/* -DestinationPath dnEditor
-      
-    - name: Release
-      uses: softprops/action-gh-release@v1
-      if: startsWith(github.ref, 'refs/tags/')
+        dotnet restore ${{ env.SOLUTION_FILE }}
+
+    - name: Build
+      run: |
+        dotnet build ${{ env.SOLUTION_FILE }} `
+          -c ${{ env.BUILD_CONFIGURATION }} `
+          --no-restore `
+          -p:DebugType=None `
+          -p:DebugSymbols=false
+
+    - name: Publish
+      run: |
+        dotnet publish dnEditor/dnEditor.csproj `
+          -c ${{ env.BUILD_CONFIGURATION }} `
+          -r win-x64 `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:IncludeNativeLibrariesForSelfExtract=true `
+          -p:EnableCompressionInSingleFile=true `
+          -o publish
+
+    - name: Create ZIP archive
+      shell: pwsh
+      run: |
+        Compress-Archive -Path publish/* -DestinationPath dnEditor-win-x64.zip -Force
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
       with:
-          files: dnEditor.zip
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: dnEditor-Windows
+        path: dnEditor-win-x64.zip
+        if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        
+    - name: Display structure of downloaded files
+      run: ls -R artifacts/
+
+    - name: Prepare release files
+      run: |
+        mkdir release_files
+        find artifacts -name "*.zip" -exec cp {} release_files/ \;
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: release_files/*.zip
+        generate_release_notes: true
+        draft: false
+        prerelease: false
+        token: ${{ secrets.GITHUB_TOKEN }}
+        name: Release ${{ github.ref_name }}
+        body: |
+          ## dnEditor Release ${{ github.ref_name }}
+          
+          ### 功能特点
+          - 基于 dnlib 的 .NET 程序集编辑器
+          - 支持 ILSpy 反编译器集成
+          - 提供成员创建和删除支持
+          - 包含搜索功能
+          
+          ### 系统要求
+          - Windows x64 系统
+          - .NET 7.0 Runtime
+          
+          ### 更新内容
+          - 优化构建配置
+          - 改进性能和稳定性
+          - 修复已知问题
+          
+          ### 安装说明
+          1. 下载 dnEditor-win-x64.zip
+          2. 解压到任意目录
+          3. 运行 dnEditor.exe
+
+    - name: Check Release Status
+      if: always()
+      run: |
+        echo "Release creation status: ${{ job.status }}"
+        if [ "${{ job.status }}" != "success" ]; then
+          echo "Release creation failed. Please check the error messages above."
+          exit 1
+        fi
