@@ -30,37 +30,77 @@ jobs:
       with:
         dotnet-version: ${{ env.DOTNET_VERSION }}
 
+    # 安装 .NET Framework 开发工具包
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v1.3.1
+
+    # 安装 .NET Framework 引用程序集
+    - name: Install .NET Framework Developer Pack
+      shell: powershell
+      run: |
+        # 下载并安装 .NET Framework 4.0 Developer Pack
+        $url = "https://download.microsoft.com/download/A/6/A/A6AC035D-DA3F-4F0C-ADA4-37C8E5D34E3D/setup/NDP40-KB2468871-v2-x86.exe"
+        $output = "ndp40-devpack.exe"
+        Invoke-WebRequest -Uri $url -OutFile $output
+        Start-Process -FilePath $output -ArgumentList "/q /norestart" -Wait
+        
+        # 安装 Windows SDK for .NET Framework 2.0
+        choco install netfx-4.0.3-devpack -y
+        choco install windows-sdk-7.1 -y
+
     - name: Initialize submodules
       run: |
         git submodule update --init --recursive
         
-    - name: Restore dependencies
+    # 更新项目文件
+    - name: Update project files
+      shell: powershell
       run: |
-        dotnet restore ${{ env.SOLUTION_FILE }}
+        # 更新所有 .csproj 文件
+        Get-ChildItem -Recurse -Filter *.csproj | ForEach-Object {
+          $content = Get-Content $_.FullName -Raw
+          # 添加引用程序集路径
+          if (-not ($content -match "<Reference Include=`"System`"")) {
+            $content = $content -replace "</Project>", @"
+              <ItemGroup>
+                <Reference Include="System" />
+                <Reference Include="System.Core" />
+                <Reference Include="System.Data" />
+                <Reference Include="System.Drawing" />
+                <Reference Include="System.Windows.Forms" />
+                <Reference Include="System.Xml" />
+              </ItemGroup>
+            </Project>
+"@
+          }
+          $content | Set-Content $_.FullName
+        }
 
-    - name: Build
+    - name: Restore NuGet packages
       run: |
-        dotnet build ${{ env.SOLUTION_FILE }} `
-          -c ${{ env.BUILD_CONFIGURATION }} `
-          --no-restore `
-          -p:DebugType=None `
-          -p:DebugSymbols=false
+        nuget restore ${{ env.SOLUTION_FILE }}
 
-    - name: Publish
+    - name: Build with MSBuild
       run: |
-        dotnet publish dnEditor/dnEditor.csproj `
-          -c ${{ env.BUILD_CONFIGURATION }} `
-          -r win-x64 `
-          --self-contained true `
-          -p:PublishSingleFile=true `
-          -p:IncludeNativeLibrariesForSelfExtract=true `
-          -p:EnableCompressionInSingleFile=true `
-          -o publish
+        msbuild ${{ env.SOLUTION_FILE }} `
+          /p:Configuration=${{ env.BUILD_CONFIGURATION }} `
+          /p:Platform="Any CPU" `
+          /p:TargetFrameworkVersion=v4.0 `
+          /t:Rebuild `
+          /m
+
+    - name: Create output directory
+      run: mkdir publish
+
+    - name: Copy build outputs
+      shell: powershell
+      run: |
+        Copy-Item "dnEditor\bin\${{ env.BUILD_CONFIGURATION }}\*" -Destination "publish" -Recurse
 
     - name: Create ZIP archive
       shell: pwsh
       run: |
-        Compress-Archive -Path publish/* -DestinationPath dnEditor-win-x64.zip -Force
+        Compress-Archive -Path publish\* -DestinationPath dnEditor-win-x64.zip -Force
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
@@ -110,23 +150,6 @@ jobs:
           
           ### 系统要求
           - Windows x64 系统
-          - .NET 7.0 Runtime
+          - .NET Framework 4.0 或更高版本
           
-          ### 更新内容
-          - 优化构建配置
-          - 改进性能和稳定性
-          - 修复已知问题
-          
-          ### 安装说明
-          1. 下载 dnEditor-win-x64.zip
-          2. 解压到任意目录
-          3. 运行 dnEditor.exe
-
-    - name: Check Release Status
-      if: always()
-      run: |
-        echo "Release creation status: ${{ job.status }}"
-        if [ "${{ job.status }}" != "success" ]; then
-          echo "Release creation failed. Please check the error messages above."
-          exit 1
-        fi
+          ### 更
